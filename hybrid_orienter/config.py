@@ -45,3 +45,5 @@ class HybridOrienterConfig:
     angle_tolerance  : float = 0.25  # degrees — skip rotation below this
     # Interpolation — None = auto-select per device
     interp_mode      : Optional[str] = None
+    # Detector batch size — None = use device default
+    detector_batch_size : Optional[int] = None

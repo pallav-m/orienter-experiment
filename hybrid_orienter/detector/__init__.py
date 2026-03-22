@@ -21,7 +21,7 @@ log = logging.getLogger(__name__)
 __all__ = ["TextDetector", "TextDetectionResult", "PolygonBox"]
 
 # Default batch sizes per device
-_DEFAULT_BATCH_SIZES = {"cpu": 8, "mps": 8, "cuda": 36}
+_DEFAULT_BATCH_SIZES = {"cpu": 8, "mps": 16, "cuda": 48}
 
 
 def _get_total_splits(image_size, height):

@@ -1,8 +1,12 @@
+import logging
+import time
 import numpy as np
 import torch
 import torch.nn.functional as F
 import kornia.geometry.transform as KGT
 from typing import List, Tuple
+
+log = logging.getLogger(__name__)
 
 
 def rotate_bound_tensor(
@@ -69,9 +73,14 @@ def correct_skew_batch(
     angle_tolerance : float = 0.25,
     interp_mode     : str   = "bilinear",
 ) -> Tuple[List[torch.Tensor], List[float]]:
+    t0 = time.time()
     corrected, applied = [], []
-    for t, a in zip(rgb_tensors, angle_degs):
+    for i, (t, a) in enumerate(zip(rgb_tensors, angle_degs)):
+        ti = time.time()
         c, aa = correct_skew(t, a, device, angle_tolerance, interp_mode)
         corrected.append(c)
         applied.append(aa)
+        _, _, H, W = t.shape
+        log.debug(f"[rotation] img {i}: {H}x{W} angle={a:.3f}° applied={aa:.3f}° in {time.time()-ti:.4f}s")
+    log.debug(f"[rotation] correct_skew_batch total: {time.time()-t0:.4f}s | {len(rgb_tensors)} images")
     return corrected, applied

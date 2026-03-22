@@ -7,7 +7,7 @@ if not _logger.handlers:
     _handler = logging.StreamHandler(sys.stdout)
     _handler.setFormatter(logging.Formatter("%(asctime)s | %(name)s | %(levelname)s | %(message)s"))
     _logger.addHandler(_handler)
-    _logger.setLevel(logging.INFO)
+    _logger.setLevel(logging.DEBUG)
 
 from .orienter import HybridOrienter
 from .config import HybridOrienterConfig, SuryaPriorConfig

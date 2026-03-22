@@ -83,13 +83,22 @@ class HybridOrienter:
         return_corrected: bool = True,
     ) -> Tuple[Optional[List[torch.Tensor]], List[float]]:
         """Core pipeline — shared by reorient() and batch_reorient()."""
+        n = len(images)
+        t0 = time.time()
+
         originals, pil_images = self._normalize_inputs(images)
+        t1 = time.time()
+        log.debug(f"[pipeline] normalize_inputs: {t1-t0:.4f}s | {n} images")
 
         # Surya prior: PIL RGB → batch detection → prior angles
-        prior_angles = self.surya_prior.compute_batch(pil_images)
+        prior_angles = self.surya_prior.compute_batch(pil_images, batch_size=self.cfg.detector_batch_size)
+        t2 = time.time()
+        log.debug(f"[pipeline] surya_prior.compute_batch: {t2-t1:.4f}s | {n} images | priors={prior_angles}")
 
         # GPU pipeline: build tensors → blur + Canny (size-grouped) → Hough → filter
         rgb_tensors, gray_tensors, _ = build_batch(originals, self.device)
+        t3 = time.time()
+        log.debug(f"[pipeline] build_batch: {t3-t2:.4f}s | {n} images → tensors on {self.device}")
 
         edge_maps = blur_and_detect_edges(
             gray_tensors,
@@ -99,13 +108,18 @@ class HybridOrienter:
             high_threshold = self.cfg.canny_high,
         )
         del gray_tensors  # free GPU memory before estimation
+        t4 = time.time()
+        log.debug(f"[pipeline] blur_and_detect_edges: {t4-t3:.4f}s | {n} edge maps")
 
         estimates  = self.estimator.estimate_batch(edge_maps, prior_angles)
         angle_degs = [e["angle_deg"] for e in estimates]
         del edge_maps
+        t5 = time.time()
+        log.debug(f"[pipeline] estimator.estimate_batch: {t5-t4:.4f}s | {n} images | angles={angle_degs}")
 
         if not return_corrected:
             del rgb_tensors
+            log.debug(f"[pipeline] TOTAL: {t5-t0:.4f}s | {n} images | {(t5-t0)/n:.4f}s/img (angles only)")
             return None, angle_degs
 
         corrected, applied = correct_skew_batch(
@@ -115,6 +129,9 @@ class HybridOrienter:
             angle_tolerance = self.cfg.angle_tolerance,
             interp_mode     = self.interp_mode,
         )
+        t6 = time.time()
+        log.debug(f"[pipeline] correct_skew_batch: {t6-t5:.4f}s | {n} images")
+        log.debug(f"[pipeline] TOTAL: {t6-t0:.4f}s | {n} images | {(t6-t0)/n:.4f}s/img (with correction)")
         return corrected, applied
 
     def reorient(

@@ -1,3 +1,5 @@
+import logging
+import time
 import torch
 from typing import List
 
@@ -6,6 +8,8 @@ from .hough import (
     build_hough_angles, hough_accumulator,
     find_hough_peaks, HoughResult, PeakResult,
 )
+
+log = logging.getLogger(__name__)
 
 
 class HybridEstimator:
@@ -59,15 +63,26 @@ class HybridEstimator:
                             )
         return sorted_angles[idx].item()
 
-    def estimate(self, edge_map: torch.Tensor, prior_angle: float) -> dict:
+    def estimate(self, edge_map: torch.Tensor, prior_angle: float, index: int = -1) -> dict:
         """
         Estimate skew for a single edge map using an external prior angle.
 
         Returns dict with angle_deg, should_rotate, prior_angle.
         """
+        t0 = time.time()
         hr    = hough_accumulator(edge_map, self.theta, self._hough_cfg)
+        t1 = time.time()
         peaks = find_hough_peaks(hr, self._peak_cfg)
+        t2 = time.time()
         angle = self._filter_by_prior(peaks, prior_angle)
+        t3 = time.time()
+
+        edge_count = (edge_map.squeeze() > 0.5).sum().item()
+        log.debug(
+            f"[estimator] img {index}: edges={edge_count} | "
+            f"hough={t1-t0:.4f}s peaks={t2-t1:.4f}s filter={t3-t2:.4f}s | "
+            f"prior={prior_angle:.3f}° → angle={angle:.3f}°"
+        )
         return {
             "angle_deg"    : angle,
             "should_rotate": abs(angle) > self.cfg.angle_tolerance,
@@ -79,7 +94,10 @@ class HybridEstimator:
         edge_maps    : List[torch.Tensor],
         prior_angles : List[float],
     ) -> List[dict]:
-        return [
-            self.estimate(em, prior)
-            for em, prior in zip(edge_maps, prior_angles)
+        t0 = time.time()
+        results = [
+            self.estimate(em, prior, index=i)
+            for i, (em, prior) in enumerate(zip(edge_maps, prior_angles))
         ]
+        log.debug(f"[estimator] estimate_batch total: {time.time()-t0:.4f}s | {len(edge_maps)} images")
+        return results

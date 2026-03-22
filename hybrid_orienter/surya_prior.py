@@ -68,15 +68,26 @@ class SuryaPrior:
             return 0.0
         return self._median(angles)
 
-    def compute_batch(self, pil_images: List[Image.Image]) -> List[float]:
+    def compute_batch(self, pil_images: List[Image.Image], batch_size: Optional[int] = None) -> List[float]:
         """Batch prior angles — single Surya inference call."""
-        results = self._predictor(pil_images)
+        import time
+        t0 = time.time()
+        kwargs = {}
+        if batch_size is not None:
+            kwargs["batch_size"] = batch_size
+        results = self._predictor(pil_images, **kwargs)
+        t1 = time.time()
+        log.debug(f"[surya_prior] predictor.__call__: {t1-t0:.4f}s | {len(pil_images)} images")
+
         priors = []
         for i, result in enumerate(results):
             angles = self._angles_from_result(result)
             if not angles:
-                log.debug(f"SuryaPrior: image {i} — no valid text angles, using 0.0")
+                log.debug(f"[surya_prior] image {i} — no valid text angles, using 0.0")
                 priors.append(0.0)
             else:
+                log.debug(f"[surya_prior] image {i} — {len(angles)} text angles, median={self._median(list(angles)):.3f}°")
                 priors.append(self._median(angles))
+        t2 = time.time()
+        log.debug(f"[surya_prior] angle extraction: {t2-t1:.4f}s | {len(pil_images)} images")
         return priors
