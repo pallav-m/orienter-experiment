@@ -9,8 +9,7 @@ from PIL import Image
 from .config import HybridOrienterConfig, SuryaPriorConfig
 from .device import get_device, get_interp_mode
 from .preprocessing import (
-    build_batch, tensor_to_bgr,
-    preprocess_for_edges, detect_edges_batch,
+    build_batch, tensor_to_bgr, blur_and_detect_edges,
 )
 from .estimator import HybridEstimator
 from .surya_prior import SuryaPrior
@@ -25,10 +24,10 @@ class HybridOrienter:
     Surya text detection as prior + kornia/torch Hough refinement.
 
     Pipeline:
-      BGR numpy → Surya text detection → polygon angles → prior
-      BGR numpy → tensor → grayscale → blur → Canny edges
+      input → Surya text detection → polygon angles → prior
+      input → tensor → grayscale → blur → Canny edges
       → Hough accumulator → filter by Surya prior → weighted median
-      → bound-preserving rotation → BGR numpy
+      → (optional) bound-preserving rotation → BGR numpy
     """
 
     def __init__(
@@ -65,47 +64,49 @@ class HybridOrienter:
         )
 
     @staticmethod
-    def _to_bgr_and_pil(
+    def _normalize_inputs(
         images: List[Union[np.ndarray, Image.Image]],
-    ) -> Tuple[List[np.ndarray], List[Image.Image]]:
-        """Normalize inputs: accept BGR numpy or PIL, produce both forms."""
-        bgr_list, pil_list = [], []
+    ) -> Tuple[List[Union[np.ndarray, Image.Image]], List[Image.Image]]:
+        """Return (originals for build_batch, PIL list for Surya)."""
+        pil_list = []
         for img in images:
             if isinstance(img, Image.Image):
-                rgb_array = np.array(img.convert("RGB"))
-                bgr_list.append(cv2.cvtColor(rgb_array, cv2.COLOR_RGB2BGR))
                 pil_list.append(img)
             else:
-                bgr_list.append(img)
-                pil_list.append(Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB)))
-        return bgr_list, pil_list
+                # BGR→RGB via numpy slice, wrap as PIL (lightweight, no cv2)
+                pil_list.append(Image.fromarray(img[:, :, ::-1]))
+        return images, pil_list
 
     def _run_pipeline(
         self,
         images: List[Union[np.ndarray, Image.Image]],
-    ) -> Tuple[List[torch.Tensor], List[float]]:
+        return_corrected: bool = True,
+    ) -> Tuple[Optional[List[torch.Tensor]], List[float]]:
         """Core pipeline — shared by reorient() and batch_reorient()."""
-        bgr_images, pil_images = self._to_bgr_and_pil(images)
+        originals, pil_images = self._normalize_inputs(images)
 
         # Surya prior: PIL RGB → batch detection → prior angles
         prior_angles = self.surya_prior.compute_batch(pil_images)
 
-        # GPU pipeline: Canny edges → Hough → filter by prior → rotation
-        rgb_tensors, gray_tensors, _ = build_batch(bgr_images, self.device)
+        # GPU pipeline: build tensors → blur + Canny (size-grouped) → Hough → filter
+        rgb_tensors, gray_tensors, _ = build_batch(originals, self.device)
 
-        blurred   = preprocess_for_edges(
+        edge_maps = blur_and_detect_edges(
             gray_tensors,
-            blur_kernel = self.cfg.blur_kernel,
-            blur_sigma  = self.cfg.blur_sigma,
-        )
-        edge_maps = detect_edges_batch(
-            blurred,
+            blur_kernel    = self.cfg.blur_kernel,
+            blur_sigma     = self.cfg.blur_sigma,
             low_threshold  = self.cfg.canny_low,
             high_threshold = self.cfg.canny_high,
         )
+        del gray_tensors  # free GPU memory before estimation
 
         estimates  = self.estimator.estimate_batch(edge_maps, prior_angles)
         angle_degs = [e["angle_deg"] for e in estimates]
+        del edge_maps
+
+        if not return_corrected:
+            del rgb_tensors
+            return None, angle_degs
 
         corrected, applied = correct_skew_batch(
             rgb_tensors,
@@ -118,41 +119,43 @@ class HybridOrienter:
 
     def reorient(
         self,
-        image        : Union[np.ndarray, Image.Image],
-        return_angle : bool = False,
-    ) -> Union[np.ndarray, Tuple[np.ndarray, float]]:
+        image            : Union[np.ndarray, Image.Image],
+        return_corrected : bool = True,
+    ) -> Tuple[Optional[np.ndarray], float]:
         """
-        Correct skew in a single BGR image.
+        Detect and optionally correct skew in a single image.
 
         Args:
-            image        : (H, W, 3) BGR uint8
-            return_angle : also return the detected skew angle
+            image            : BGR uint8 numpy array or PIL Image
+            return_corrected : if True, also return the corrected image
 
         Returns:
-            corrected BGR image, optionally with angle float
+            (corrected_image_or_None, angle_deg)
         """
-        corrected, applied = self._run_pipeline([image])
-        out = tensor_to_bgr(corrected[0])
-        return (out, applied[0]) if return_angle else out
+        corrected_tensors, applied = self._run_pipeline(
+            [image], return_corrected=return_corrected,
+        )
+        if return_corrected:
+            return tensor_to_bgr(corrected_tensors[0]), applied[0]
+        return None, applied[0]
 
     def batch_reorient(
         self,
-        images        : List[Union[np.ndarray, Image.Image, str]],
-        return_angles : bool = False,
-        verbose       : bool = True,
-    ) -> Union[List[np.ndarray], Tuple[List[np.ndarray], List[float]]]:
+        images           : List[Union[np.ndarray, Image.Image, str]],
+        return_corrected : bool = True,
+        verbose          : bool = True,
+    ) -> Tuple[Optional[List[np.ndarray]], List[float]]:
         """
-        Correct skew in a batch of BGR images or file paths.
+        Detect and optionally correct skew in a batch of images.
 
         Args:
-            images        : list of BGR uint8 arrays or file path strings
-            return_angles : also return list of detected angles
-            verbose       : log progress every 10 images
+            images           : list of BGR uint8 arrays, PIL Images, or file path strings
+            return_corrected : if True, also return corrected images
+            verbose          : log timing info
 
         Returns:
-            list of corrected BGR images, optionally with angles
+            (list_of_corrected_or_None, list_of_angles)
         """
-        results_out = [None] * len(images)
         angles_out  = [None] * len(images)
         loaded, valid_idx = [], []
 
@@ -168,23 +171,20 @@ class HybridOrienter:
             valid_idx.append(i)
 
         if not loaded:
-            return (results_out, angles_out) if return_angles else results_out
+            results_out = [None] * len(images) if return_corrected else None
+            return results_out, angles_out
 
         t0 = time.time()
-        corrected, applied = self._run_pipeline(loaded)
+        corrected_tensors, applied = self._run_pipeline(
+            loaded, return_corrected=return_corrected,
+        )
 
+        # Scatter results back to original indices
+        results_out = [None] * len(images) if return_corrected else None
         for local_i, global_i in enumerate(valid_idx):
-            results_out[global_i] = tensor_to_bgr(corrected[local_i])
-            angles_out[global_i]  = applied[local_i]
-
-            if verbose and (local_i + 1) % 10 == 0:
-                elapsed = time.time() - t0
-                avg     = elapsed / (local_i + 1)
-                log.info(
-                    f"Processed {local_i+1}/{len(loaded)} | "
-                    f"avg {avg:.3f}s/img | "
-                    f"ETA {avg * (len(loaded) - local_i - 1):.1f}s"
-                )
+            angles_out[global_i] = applied[local_i]
+            if return_corrected:
+                results_out[global_i] = tensor_to_bgr(corrected_tensors[local_i])
 
         if verbose:
             total = time.time() - t0
@@ -193,4 +193,4 @@ class HybridOrienter:
                 f"{total:.2f}s total | {total/len(loaded):.3f}s/img"
             )
 
-        return (results_out, angles_out) if return_angles else results_out
+        return results_out, angles_out

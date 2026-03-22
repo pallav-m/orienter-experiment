@@ -40,8 +40,8 @@ class HybridEstimator:
             return prior_deg
 
         margin      = self.cfg.margin_tolerance
-        skew_angles = (90.0 - peaks.theta_deg).cpu()
-        votes       = peaks.votes.cpu()
+        skew_angles = 90.0 - peaks.theta_deg  # already on CPU from find_hough_peaks
+        votes       = peaks.votes
 
         mask            = (skew_angles >= prior_deg - margin) & \
                           (skew_angles <= prior_deg + margin)

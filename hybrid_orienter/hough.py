@@ -1,6 +1,7 @@
+import math
 import torch
 import torch.nn.functional as F
-from typing import List, NamedTuple
+from typing import NamedTuple
 
 from .config import HoughConfig, PeakConfig
 
@@ -12,9 +13,9 @@ class HoughResult(NamedTuple):
 
 
 class PeakResult(NamedTuple):
-    theta_rad : torch.Tensor  # (K,) radians
-    theta_deg : torch.Tensor  # (K,) degrees
-    votes     : torch.Tensor  # (K,) vote counts
+    theta_rad : torch.Tensor  # (K,) radians  — on CPU
+    theta_deg : torch.Tensor  # (K,) degrees  — on CPU
+    votes     : torch.Tensor  # (K,) vote counts — on CPU
     num_peaks : int
 
 
@@ -40,13 +41,12 @@ def hough_accumulator(
     em     = edge_map.squeeze()
     H, W   = em.shape
 
-    diag_len = int(torch.ceil(
-        torch.sqrt(torch.tensor(H**2 + W**2, dtype=torch.float32))
-    ).item())
-    num_rho = 2 * diag_len + 1
+    diag_len = math.ceil(math.sqrt(H * H + W * W))
+    num_rho  = 2 * diag_len + 1
 
-    ys, xs = torch.where(em > 0.5)
-    N = len(xs)
+    # torch.nonzero is slightly more efficient than torch.where
+    coords = torch.nonzero(em > 0.5, as_tuple=False)  # (N, 2)
+    N = coords.shape[0]
 
     if N == 0:
         return HoughResult(
@@ -54,6 +54,8 @@ def hough_accumulator(
             theta    = theta,
             diag_len = diag_len,
         )
+
+    ys, xs = coords[:, 0], coords[:, 1]
 
     if N > cfg.max_samples:
         perm = torch.randperm(N, device=device)[:cfg.max_samples]
@@ -77,9 +79,10 @@ def hough_accumulator(
 
 
 def find_hough_peaks(hr: HoughResult, cfg: PeakConfig) -> PeakResult:
-    """Extract dominant angle peaks via max-pool NMS + topk."""
+    """Extract dominant angle peaks via fused NMS + topk (single GPU sync)."""
     accum  = hr.accum
     device = accum.device
+    A      = hr.theta.shape[0]
 
     pooled = F.max_pool2d(
         accum.unsqueeze(0).unsqueeze(0),
@@ -88,25 +91,41 @@ def find_hough_peaks(hr: HoughResult, cfg: PeakConfig) -> PeakResult:
         padding     = (cfg.nms_rho_size // 2, cfg.nms_theta_size // 2),
     ).squeeze()
 
-    vote_threshold = cfg.min_vote_ratio * accum.max()
-    peak_mask      = (accum == pooled) & (accum >= vote_threshold)
+    # Zero out non-local-maxima, then topk on flattened tensor
+    # This avoids separate .max() and torch.where syncs
+    masked = accum * (accum == pooled).float()
+    flat   = masked.view(-1)
 
-    rho_idx, ang_idx = torch.where(peak_mask)
-    peak_votes       = accum[rho_idx, ang_idx]
+    k = min(cfg.num_peaks, flat.numel())
+    topk_vals, topk_idx = torch.topk(flat, k=k)
 
-    if len(peak_votes) == 0:
-        empty = torch.tensor([], device=device)
+    # Single GPU→CPU transfer for all peak data
+    topk_vals_cpu = topk_vals.cpu()
+    topk_idx_cpu  = topk_idx.cpu()
+    theta_cpu     = hr.theta.cpu()
+
+    # Filter by vote threshold on CPU (no GPU sync needed)
+    max_val = topk_vals_cpu[0].item()
+    if max_val == 0:
+        empty = torch.tensor([])
         return PeakResult(empty, empty, empty, 0)
 
-    k    = min(cfg.num_peaks, len(peak_votes))
-    topk = torch.topk(peak_votes, k=k)
+    threshold = cfg.min_vote_ratio * max_val
+    valid     = topk_vals_cpu >= threshold
 
-    best_ang = ang_idx[topk.indices]
-    best_t   = hr.theta[best_ang]
+    topk_vals_cpu = topk_vals_cpu[valid]
+    topk_idx_cpu  = topk_idx_cpu[valid]
+
+    if len(topk_vals_cpu) == 0:
+        empty = torch.tensor([])
+        return PeakResult(empty, empty, empty, 0)
+
+    ang_idx = topk_idx_cpu % A
+    best_t  = theta_cpu[ang_idx]
 
     return PeakResult(
         theta_rad = best_t,
         theta_deg = torch.rad2deg(best_t),
-        votes     = topk.values,
-        num_peaks = k,
+        votes     = topk_vals_cpu,
+        num_peaks = len(topk_vals_cpu),
     )
