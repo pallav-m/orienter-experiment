@@ -21,12 +21,14 @@ class SuryaPrior:
         self,
         predictor=None,
         cfg: SuryaPriorConfig = SuryaPriorConfig(),
+        device=None,
+        dtype=None,
     ):
         if predictor is not None:
             self._predictor = predictor
         else:
             from .detector import TextDetector
-            self._predictor = TextDetector()
+            self._predictor = TextDetector(device=device, dtype=dtype)
 
         self.cfg = cfg
 

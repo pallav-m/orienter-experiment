@@ -83,7 +83,11 @@ class TextDetector:
         self._dtype = dtype
         self._disable_tqdm = settings.DISABLE_TQDM
 
-        log.info(f"TextDetector ready | device={device} | dtype={dtype}")
+        log.info(
+            f"TextDetector ready | device={device} | dtype={dtype} | "
+            f"batch_size={self._get_batch_size()} | "
+            f"checkpoint={checkpoint}"
+        )
 
     @property
     def disable_tqdm(self) -> bool:
@@ -181,5 +185,4 @@ class TextDetector:
                 result = parallel_get_boxes(pred, orig_sizes[j], include_maps)
                 all_results.append(result)
 
-        torch.cuda.empty_cache()
         return all_results

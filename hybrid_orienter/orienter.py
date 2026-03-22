@@ -50,12 +50,17 @@ class HybridOrienter:
                 min_confidence = cfg.surya_min_confidence,
                 max_skew_deg   = cfg.surya_max_skew_deg,
             ),
+            device = str(self.device),
+            dtype  = torch.float16 if self.device.type == "cuda" else torch.float32,
         )
 
         self.estimator = HybridEstimator(cfg, self.device)
 
+        det_device = self.surya_prior._predictor._device
+        det_dtype = self.surya_prior._predictor._dtype
         log.info(
-            f"HybridOrienter ready | device={self.device} | "
+            f"HybridOrienter ready | pipeline_device={self.device} | "
+            f"detector_device={det_device} | detector_dtype={det_dtype} | "
             f"interp={self.interp_mode}"
         )
 
