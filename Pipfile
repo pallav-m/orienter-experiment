@@ -13,6 +13,8 @@ pillow = "*"
 numpy = "*"
 scikit-image = "*"
 matplotlib = "*"
+onnxruntime = "*"
+pyclipper = "*"
 
 [dev-packages]
 
