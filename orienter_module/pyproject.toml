@@ -1,0 +1,22 @@
+[build-system]
+requires      = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name        = "orienter"
+version     = "0.1.0"
+description = "PyTorch-native document skew detection and correction"
+requires-python = ">=3.10"
+
+dependencies = [
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+    "kornia>=0.7.0",
+    "opencv-python>=4.8.0",
+    "numpy>=1.24.0",
+    "pillow>=10.0.0",
+]
+
+[tool.setuptools.packages.find]
+where   = ["."]
+include = ["orienter*"]
