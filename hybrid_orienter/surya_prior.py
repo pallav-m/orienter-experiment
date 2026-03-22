@@ -25,8 +25,8 @@ class SuryaPrior:
         if predictor is not None:
             self._predictor = predictor
         else:
-            from surya.detection import DetectionPredictor
-            self._predictor = DetectionPredictor()
+            from .detector import TextDetector
+            self._predictor = TextDetector()
 
         self.cfg = cfg
 
